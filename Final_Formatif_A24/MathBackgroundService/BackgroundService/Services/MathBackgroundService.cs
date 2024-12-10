@@ -1,4 +1,6 @@
-﻿using BackgroundServiceVote.Hubs;
+﻿using BackgroundServiceVote.Data;
+using BackgroundServiceVote.DTOs;
+using BackgroundServiceVote.Hubs;
 using BackgroundServiceVote.Models;
 using Microsoft.AspNetCore.SignalR;
 
@@ -24,10 +26,13 @@ namespace BackgroundServiceVote.Services
 
         private MathQuestionsService _mathQuestionsService;
 
-        public MathBackgroundService(IHubContext<MathQuestionsHub> mathQuestionHub, MathQuestionsService mathQuestionsService)
+        private IServiceScopeFactory _serviceScopeFactory;
+
+        public MathBackgroundService(IHubContext<MathQuestionsHub> mathQuestionHub, MathQuestionsService mathQuestionsService, IServiceScopeFactory serviceScopeFactory)
         {
             _mathQuestionHub = mathQuestionHub;
             _mathQuestionsService = mathQuestionsService;
+            _serviceScopeFactory = serviceScopeFactory;
         }
 
         public void AddUser(string userId)
@@ -57,13 +62,14 @@ namespace BackgroundServiceVote.Services
             UserData userData = _data[userId];
             
             if (userData.Choice != -1)
-                throw new Exception("A user cannot change is choice!");
+                throw new Exception("A user cannot change his choice!");
 
             userData.Choice = choice;
 
             _currentQuestion.PlayerChoices[choice]++;
 
             // TODO: Notifier les clients qu'un joueur a choisi une réponse
+            await _mathQuestionHub.Clients.All.SendAsync("IncreasePlayersChoices", choice);
         }
 
         private async Task EvaluateChoices()
@@ -76,10 +82,24 @@ namespace BackgroundServiceVote.Services
                 // TODO: Modifier et sauvegarder le NbRightAnswers des joueurs qui ont la bonne réponse
                 if (userData.Choice == _currentQuestion!.RightAnswerIndex)
                 {
+                    await _mathQuestionHub.Clients.User(userId).SendAsync("GoodAnswer");
+                    using (IServiceScope scope = _serviceScopeFactory.CreateScope())
+                    {
+                        BackgroundServiceContext dbContext = scope.ServiceProvider.GetRequiredService<BackgroundServiceContext>();
 
+                        var player = dbContext.Player.Where(p => p.UserId == userId).SingleOrDefault();
+                        player.NbRightAnswers++;
+                        dbContext.SaveChanges();
+                        await _mathQuestionHub.Clients.User(userId).SendAsync("PlayerInfo", new PlayerInfoDTO()
+                        {
+                            NbRightAnswers = player.NbRightAnswers,
+                        });
+                    }
                 }
                 else
                 {
+                    int answer = _currentQuestion.Answers[_currentQuestion.RightAnswerIndex];
+                    await _mathQuestionHub.Clients.User(userId).SendAsync("WrongAnswer", answer);
                 }
 
             }
